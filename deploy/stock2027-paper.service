@@ -1,0 +1,25 @@
+[Unit]
+Description=Stock2027 paper portfolio (no broker connection)
+After=network-online.target stock2027-sync.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=ubuntu
+WorkingDirectory=/opt/stock2027
+Environment=STOCK_DB=/var/lib/stock2027/console.db
+ExecStart=/usr/bin/python3 -m app.paper
+Restart=on-failure
+RestartSec=10
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/stock2027
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

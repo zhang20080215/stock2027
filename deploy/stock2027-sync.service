@@ -1,0 +1,27 @@
+[Unit]
+Description=Stock2027 read-only OpenClaw collector
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=ubuntu
+WorkingDirectory=/opt/stock2027
+Environment=STOCK_DB=/var/lib/stock2027/console.db
+Environment=STOCK_WORKSPACE=/root/.openclaw/workspace/agent-bb56b147
+Environment=STOCK_SESSIONS=/root/.openclaw/agents/agent-bb56b147/sessions
+Environment=SYNC_INTERVAL=30
+ExecStart=/usr/bin/python3 -m app.collector
+Restart=on-failure
+RestartSec=10
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/stock2027
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

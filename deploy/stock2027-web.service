@@ -1,0 +1,29 @@
+[Unit]
+Description=Stock2027 private research console
+After=network.target stock2027-sync.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/stock2027
+EnvironmentFile=/etc/stock2027.env
+Environment=STOCK_DB=/var/lib/stock2027/console.db
+Environment=STOCK_PASSWORD_FILE=/var/lib/stock2027-auth/password.hash
+StateDirectory=stock2027-auth
+StateDirectoryMode=0700
+Environment=STOCK_HOST=127.0.0.1 STOCK_PORT=8790
+ExecStart=/usr/bin/python3 -m app.server
+Restart=on-failure
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/stock2027
+ReadWritePaths=/var/lib/stock2027-auth
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

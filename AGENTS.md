@@ -2,32 +2,37 @@
 
 ## Project Structure & Module Organization
 
-This repository is currently a minimal scaffold. `README.md` contains the project title, `stock2027`; no application source, tests, assets, or dependency manifests have been committed. This guide lives in the repository root as `AGENTS.md`.
-
-When adding the first implementation, choose a structure appropriate to the selected stack and document it in `README.md`. Keep application code, tests, and static assets in clearly named directories, such as `src/`, `tests/`, and `assets/`, where appropriate. Avoid introducing empty directories or tooling without a concrete use.
+`app/collector.py` imports OpenClaw records into SQLite; `app/server.py` serves authenticated, read-only APIs. `app/store.py` owns the schema. Static HTML, CSS, and JavaScript live in `app/static/`; tests live in `tests/`; systemd units and the SSH access script live in `deploy/`. See `README.md` for deployment and data semantics.
 
 ## Build, Test, and Development Commands
 
-There are currently no build, test, or local development commands. Do not assume that commands such as `npm test` or `make build` are available.
+Use Python 3.12 and its standard library. No dependency installation or frontend build is required.
 
 Useful repository checks include:
 
 - `git status --short`: inspect pending changes.
 - `git diff --check`: detect whitespace errors in tracked changes.
 - `git diff`: review the patch before committing.
+- `python3 -m unittest discover -s tests -v`: run tests with temporary sources and databases.
+- `python3 -m compileall -q app`: check Python syntax.
+- `node --check app/static/app.js`: check JavaScript syntax when Node.js is available.
 
-When introducing a toolchain, add reproducible installation, development, build, and test instructions to `README.md`, alongside the required runtime versions.
+Configure source paths and the database, run the collector once, then start `python3 -m app.server` with a password hash. Refer to `README.md` for environment variables.
 
 ## Coding Style & Naming Conventions
 
-No language-specific style, formatter, or linter is configured. Follow the conventions of the stack introduced by the implementation, keep indentation consistent within each file, and commit any shared formatting configuration. Use descriptive names and avoid unrelated formatting changes. For Markdown, use descriptive headings, fenced code blocks for commands, and repository-relative links.
+Use four-space Python indentation, snake_case functions, and descriptive names. Follow existing vanilla JavaScript conventions. No formatter or linter is configured. Escape source text before inserting HTML and keep formatting changes focused.
 
 ## Testing Guidelines
 
-No testing framework or coverage threshold exists yet. New executable functionality should include appropriate tests and a documented command to run them. Use descriptive test names that explain the behavior under test; adopt the selected framework’s filename conventions. Document any checks that could not be run and why.
+Use `unittest` and `test_*.py` filenames. Cover ingestion, identity, authentication, and read-only boundaries when changing them. No coverage threshold is configured. Never commit real conversations or credentials as fixtures.
 
 ## Commit & Pull Request Guidelines
 
-Git history currently contains only `Initial commit`, so no established commit convention can be inferred. Use concise, imperative subjects, such as `Add data import validation`, and keep commits focused.
+Use concise, imperative subjects, following `Add repository contributor guidelines`, and keep commits focused.
 
 Pull requests should explain the change, its purpose, and validation performed. Link related issues when available, include screenshots for visible interface changes, and document any new setup requirements. Never commit credentials, tokens, or private configuration.
+
+## Data & Deployment Boundaries
+
+Treat OpenClaw as read-only. Do not change WeChat, model settings, or the separate 8787 service. Keep credentials, databases, transcripts, and screenshots containing personal data outside Git. Distinguish quote universes, recommendations, and confirmed trades. Web chat remains out of scope for this phase.

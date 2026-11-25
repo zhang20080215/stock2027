@@ -1,1 +1,116 @@
-# stock2027
+# 产品
+
+## 项目查看入口
+
+- 智能体记忆：长期记忆 `MEMORY.md`、每日 `memory/*.md` 与交易台账；不自动生成复盘。
+- 策略与规则：只读展示 AGENTS、SOUL、IDENTITY、HEARTBEAT 和各技能的 SKILL.md，内容经过脱敏；不收录工具配置与凭据。
+- 自动任务：展示采集与模拟盘的循环和最近心跳。可通过采集服务的 `STOCK_CRON` 指定当前调度器的 jobs JSON 文件，仅收录 agentId 与当前会话目录所属智能体一致的任务；未配置或不可读取时显示未知，旧 migrated 文件不用于推断当前任务。
+- 项目状态：同步错误、持仓更新时间、扫描与历史分钟数据覆盖、模块用途。心跳不等同于 systemd 服务状态。
+- 执行记录：原“任务记录”，展示历史工具事件，不代表定时任务计划。
+
+面向 OpenClaw 微信智能体的网页控制台：工作总览、选股报告、独立模拟盘、微信对话搜索、持仓文件快照、复盘笔记、工具执行记录。控制台不调用模型、不连接券商、不修改 OpenClaw 文件；网页 API 保持只读，模拟盘由独立后台写入自己的数据库表。
+
+## 结构与运行环境
+
+- `app/collector.py`：每 30 秒检查指定智能体的源文件变更。
+- `app/server.py`：登录、只读 JSON API 与静态网页。
+- `app/store.py`：SQLite 数据结构。
+- `app/model_results.py`：依据会话父子关系与最终结束标记整理模型选股回复。
+- `app/static/`：原生 HTML/CSS/JavaScript，无 CDN 或构建依赖。
+- `tests/`：采集、幂等、日期查询与认证测试。
+- `deploy/`：systemd 服务与 Windows SSH 访问脚本。
+
+需要 Python 3.12（Ubuntu 24.04 自带），仅使用标准库。无需安装 pip 包、数据库服务或新的模型组件。
+
+## 开发与检查
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q app
+node --check app/static/app.js
+git diff --check
+```
+
+本地运行时设置 `STOCK_DB`、`STOCK_WORKSPACE`、`STOCK_SESSIONS`，先执行 `python3 -m app.collector --once`，再设置 `STOCK_PASSWORD_HASH` 并执行 `python3 -m app.server`。使用 `app.server.password_hash()` 生成随机盐和 PBKDF2-SHA256 哈希，不能直接填写明文口令。Node.js 仅用于可选的前端语法检查。
+
+## 服务器部署
+
+代码目录 `/opt/stock2027`，数据库目录 `/var/lib/stock2027`，口令哈希配置 `/etc/stock2027.env`。
+
+1. 上传代码，排除 `.env*`、私钥、数据库和缓存。
+2. 创建 `/var/lib/stock2027`，属主设为 `root:ubuntu`，权限 `0750`。
+3. 在 `/etc/stock2027.env` 写入 `STOCK_PASSWORD_HASH=...`，权限设为 `0600`。
+4. 核对 `deploy/*.service` 中的用户名和源路径，安装到 `/etc/systemd/system/`。
+5. 执行 `sudo systemctl daemon-reload` 和 `sudo systemctl enable --now stock2027-sync stock2027-web`。
+
+采集服务以 root 读取受限会话，但文件系统只读，仅可写自己的数据库目录，网络被禁用。网页以 ubuntu 运行，无权读取 `/root`，数据库以只读方式打开。已有 8787 项目与 OpenClaw 服务不参与部署。
+
+## 访问与维护
+
+服务只监听服务器 `127.0.0.1:8790`。Windows 执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\open-console.ps1
+```
+
+保持窗口打开，访问 <http://127.0.0.1:8790>。本地访问口令保存于未跟踪的 `.env.local`。若需公网或手机访问，先配置域名、HTTPS 和访问控制，再接入反向代理。
+
+```bash
+sudo systemctl status stock2027-sync stock2027-web
+sudo journalctl -u stock2027-sync -n 50 --no-pager
+sudo journalctl -u stock2027-web -n 50 --no-pager
+```
+
+页面每 30 秒更新同步状态，点击“刷新”读取新记录，避免阅读时跳动。超过两分钟未同步会警示。备份使用 SQLite 在线备份接口，或先停止两个服务再复制数据目录，避免遗漏 WAL。回滚执行 `sudo systemctl disable --now stock2027-web stock2027-sync`，不会停止微信服务。
+
+## 数据口径与扩展
+
+### 模拟盘
+
+Tushare历史分钟：从已忽略的本地 `.env` 读取 `TUSHARE_TOKEN`，部署时仅将该项存入服务器 root 专用配置，不上传整份 `.env`。通过 `https://api.tushare.pro` 的 `stk_mins` 下载不复权一分钟数据，缓存于 `history_bars`；港股 `hk_mins` 需独立权限。运行 `python3 -m app.tushare_history --db /var/lib/stock2027/console.db --env-file /etc/stock2027-tushare.env --start 2026-11-01 --end 2026-11-24` 后，以 `python3 -m app.replay --db /var/lib/stock2027/console.db --provider tushare` 重跑。此模式禁止原文价格及扫描快照补单，只用推荐后完整分钟的收盘价，并额外延后一分，不以分钟最高最低价倒推成交。分钟估算不等同逐笔撮合；当前实时模拟盘仍采用腾讯公共报价。
+
+历史回放按每次完整回复的真实发布时间处理；`model_events` 按消息 ID 保留事件，不以同一请求的最后回复或日终结论替代早盘推荐。后续撤销不删除既有估算买入。原文明确引用的现价在买入区间内时，可用于“原文现价估算”（无历史盘口验证）；否则仅在下一次选股回复前查找建议后的快照。页面保留全部回复时间线和逐股执行原因。没有后续估值的持仓按成本占位并标记净值不完整，不据此计算完整策略收益。原文同段明确限制二选一时，已有另一只持仓则不新买；复杂自然语言约束仍需逐条核对。
+
+- 导航位于“选股记录”下方，A股初始 100,000 元、港股初始 100,000 港元，独立现金账户。`stock2027-paper` 每30秒处理启用后的新模型最终结果；历史建议不补单。同一请求及股票只建一条记录，已有持仓不重复加仓。
+- 当前模拟盘对明确推荐按推荐后的有效卖一现价买入，不等待原文买入区间、尾盘确认或其他条件；缺少可用仓位比例时默认10%，备选及不买不执行。历史回放仍保留原规则。仓位按本币账户总资产计算，股数向下取整至交易单位；沪深普通A股100股、科创板至少200股，港股采用报价中的每手股数。资金不足不自动减仓。同日尚未执行的推荐按新规则重新检查，不倒填历史成交。
+- 行情来自腾讯公共报价，按有效卖一报价模拟成交，检查报价晚于建议且延迟不超过120秒；不在连续交易时段、停牌、延迟时不成交。周末及节假日无新鲜报价不会成交。免费行情不保证实时性或可成交深度，模拟成交不代表真实成交。
+- 第一阶段仅模拟买入和持仓估值，不自动卖出，未计手续费、税费、滑点和汇兑；过期估值在页面标明，不合并人民币及港元盈亏。新建表仅在控制台数据库内，不写入实际持仓文件。
+- 安装：`sudo cp deploy/stock2027-paper.service /etc/systemd/system/`，运行 `sudo systemctl daemon-reload && sudo systemctl enable --now stock2027-paper`。后台需要 HTTPS 行情访问；独立服务不改变只读采集器的网络限制。停止该服务即可停止模拟买入。
+- 历史回放：`python3 -m app.replay --db /var/lib/stock2027/console.db --start 2026-11-01 --end 2026-11-25`。只将独立报告存入 `meta.paper_replay`，不改变当前模拟盘资金或成交。页面选择“11月以来历史回放”查看。报告使用建议发布后当日已保存的有效行情快照估算，不冒充历史卖一成交；缺少历史报价不补造买入。估值使用各股最后可用快照并展示实际时间，不代表统一收盘净值或完整策略收益。当前回放仅买入持有，不回溯止盈止损。
+
+- “选股记录”默认展示模型最终结果：仅收录选股请求或实际扫描所在会话分支中 `stopReason=stop` 的完整回复，排除工具开发、临时回复及未完成输出。模型名、时间、请求和完整原文均保留，可直接定位微信原文。
+- 模型股票表仅复制明确写出的股票、判断和计划原文，不从程序结果补买点、止损或仓位。未能结构化的内容以完整模型原文为准。“不买 / 空仓”也可作为最终结论；本页不另行调用模型生成新建议。
+- 结构化字段包括整体结论、市场判断，以及逐股理由、买入条件、止损、目标、股数、金额、仓位和失效条件。缺失或有歧义的值保留为 `null`；条件性计划保留原话。点击“核对原文”查看字段出处，“导出 JSON”同时包含结构化结果、来源标识和完整原文。采集器自动迁移已有记录，仅写入控制台数据库。
+- “程序筛选”“行情数据”“原始报告”作为独立次级入口，不替代模型最终结果。模型记录在原日志更新后随采集器同步。
+- 仅采集 `agent-bb56b147`。不读取其他智能体或 OpenClaw 凭据；排除 `.trajectory` 展开日志和模型思考。
+- 分别保存用户消息与模型文本。日志中存在回复不代表微信已送达。附件仅保留已有文字描述，不复制文件。
+- 扫描报告识别 `a-scan.py`、`hk-scan.py`、`yaogu-scan.py`、`screen_ashare.py`、`trinity.py` 的工具返回。临时脚本尚不自动识别，可从模型回复查询结论。
+- `universe` 标为“扫描股票池”，不冒充推荐。保留行情时间、缺失字段和来源新鲜度，不提供实时行情。
+- 快照仅在日志明确出现同名文件时关联会话，不按时间接近推断；未持久化的历史结果无法恢复。
+- 持仓按 `positions.json` 展示，不与券商核对，不从建议推断成交，不合并人民币和港币金额。
+- 工具状态来自历史事件，不代表当前进程；异步任务可能缺少最终状态。
+- 常见密钥格式和配置项会脱敏，但自由文本无法保证完全识别，数据库与页面仍按私人资料保护。
+- 按大小、纳秒修改时间判断变更，归档重复事件按消息 ID 去重。损坏文件保留上次数据并提示错误。删除源文件不会自动清空已归档记录。
+- session、message、task、scan、report 编号和 channel 字段为后续网页会话预留；本期无消息发送接口。
+
+### 修改访问口令
+
+登录后点击左下角“修改口令”，验证当前口令并两次输入新口令（6至256字符）。成功后所有设备需要重新登录。新哈希保存在 STOCK_PASSWORD_FILE 指定的文件（服务默认 /var/lib/stock2027-auth/password.hash），启动时优先于 STOCK_PASSWORD_HASH。备份应保留此目录并限制访问。网页仅获此独立目录的写权限，业务数据库仍只读。手动重置时，停止网页服务、移走该哈希文件并更新 /etc/stock2027.env，再启动服务。
+
+超级口令通过服务器私有配置 STOCK_MASTER_PASSWORD_HASH 配置，可用于登录和重置普通口令，使用相同的限流规则。修改普通口令不会改变超级口令。不得将实际口令或哈希提交至 Git。修改口令弹窗明文显示新口令和确认口令，当前口令仍隐藏；退出登录需确认。
+### 公网入口（Nginx）
+
+公网部署使用 Nginx 的 8790 端口，转发到网页服务的 127.0.0.1:8792。安装以下配置，不修改其他网站或 8787 服务：
+
+```bash
+sudo mkdir -p /etc/systemd/system/stock2027-web.service.d
+sudo cp deploy/public-proxy.conf /etc/systemd/system/stock2027-web.service.d/
+sudo cp deploy/stock2027.nginx.conf /etc/nginx/sites-available/stock2027
+sudo ln -s /etc/nginx/sites-available/stock2027 /etc/nginx/sites-enabled/stock2027
+sudo nginx -t
+sudo systemctl daemon-reload
+sudo systemctl restart stock2027-web
+sudo systemctl reload nginx
+```
+
+云安全组按需放行 TCP 8790 后，可访问 `http://服务器IP:8790/`，无需本机 SSH 隧道。此入口为 HTTP；配置域名与有效证书后可改用 HTTPS，并设置 STOCK_SECURE_COOKIE=1。配置与代码可以提交 Git，服务器私有口令配置及哈希文件不能提交。

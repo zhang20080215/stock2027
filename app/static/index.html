@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>产品</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="login" class="login-shell" hidden>
+    <form id="loginForm" class="login-card">
+      <div class="brand-mark">S<span>27</span></div>
+      <h1>产品</h1>
+      <label for="password">访问口令</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="输入口令">
+      <p id="loginError" role="alert" class="negative"></p>
+      <button type="submit" class="primary">进入产品</button>
+    </form>
+  </div>
+  <div id="shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><div class="brand-mark">S<span>27</span></div><div>产品</div></a>
+      <nav aria-label="主导航">
+        <a href="#overview" data-tab="overview"><span>◫</span>工作总览</a>
+        <a href="#scans" data-tab="scans"><span>▤</span>选股记录</a>
+        <a href="#paper" data-tab="paper"><span>▥</span>模拟盘</a>
+        <a href="#messages" data-tab="messages"><span>☷</span>微信对话</a>
+        <a href="#positions" data-tab="positions"><span>▥</span>持仓台账</a>
+        <a href="#notes" data-tab="notes"><span>▧</span>智能体记忆</a>
+        <a href="#automation" data-tab="automation"><span>◷</span>自动任务</a>
+        <a href="#rules" data-tab="rules"><span>▤</span>策略与规则</a>
+        <a href="#project" data-tab="project"><span>◫</span>项目状态</a>
+        <a href="#tasks" data-tab="tasks"><span>◷</span>执行记录</a>
+      </nav>
+      <div class="sidebar-bottom"><button id="changePassword" class="text-button">修改口令</button><button id="logout" class="text-button">退出登录</button></div>
+    </aside>
+    <div class="main-shell">
+      <div id="error" class="error-banner" role="alert" hidden></div>
+      <main id="main" tabindex="-1" aria-live="polite"></main>
+    </div>
+  </div>
+  <dialog id="detail"><div class="dialog-header"><h2 id="detailTitle">详情</h2><button id="closeDetail" aria-label="关闭详情">关闭</button></div><div id="detailBody"></div></dialog>
+  <dialog id="passwordDialog"><form id="passwordForm" class="login-card"><div class="dialog-header"><h2>修改口令</h2><button type="button" id="cancelPassword">取消</button></div><label for="currentPassword">当前口令或超级口令</label><input id="currentPassword" type="password" autocomplete="current-password" required maxlength="256"><label for="newPassword">新口令（至少6个字符）</label><input id="newPassword" type="text" autocomplete="new-password" required minlength="6" maxlength="256"><label for="confirmPassword">确认新口令</label><input id="confirmPassword" type="text" autocomplete="new-password" required minlength="6" maxlength="256"><p class="small">修改成功后，所有设备需要重新登录。</p><p id="passwordError" class="negative" role="alert"></p><button type="submit" class="primary">保存新口令</button></form></dialog>
+<dialog id="logoutDialog"><div class="dialog-header"><h2>退出登录</h2></div><p>确认退出当前设备？</p><div class="toolbar"><button id="cancelLogout">取消</button><button id="confirmLogout" class="primary">退出登录</button></div></dialog></body>
+</html>
