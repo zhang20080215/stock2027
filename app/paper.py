@@ -1,7 +1,7 @@
 """Paper execution only; never connects to a broker or writes OpenClaw sources."""
 from contextlib import closing
 import datetime as dt
-from decimal import Decimal, ROUND_FLOOR
+from decimal import Decimal
 import json
 import logging
 import math
@@ -11,6 +11,7 @@ import time
 from urllib.request import Request, urlopen
 
 from app.store import connect
+from app.paper_levels import exit_levels
 
 UTC = dt.timezone.utc
 LOCAL = dt.timezone(dt.timedelta(hours=8))
@@ -62,21 +63,20 @@ def plan_for(stock, summary):
 
 
 def recommendation_plan(stock, summary):
-    """Live policy: explicit recommendations buy at market, defaulting to 10%."""
+    """Use the recommended share count when available, subject to available cash."""
     if stock.get('decision') not in ('推荐', '首选', '买入', '可以买', '可买', '明确买入', '可以买入', '可买入', '推荐买入', '立即买入', '直接买入'):
         return None, '未明确允许买入'
-    position = stock.get('position') or ''
-    percentages = re.findall(r'(?<![\d.])(\d+(?:\.\d+)?)\s*%', position)
-    tenths = re.fullmatch(r'\s*([一二三四五六七八九十]|\d+(?:\.\d+)?)成(?:仓)?\s*', position)
-    ratio = 0.1
-    if len(percentages) == 1 and not re.search(r'上限|最多|不超|以内|至|到|[-–—~～]', position):
-        ratio = float(percentages[0]) / 100
-    elif tenths:
-        value = tenths[1]
-        ratio = (('一二三四五六七八九十'.index(value) + 1) if value in '一二三四五六七八九十' else float(value)) / 10
-    if not 0 < ratio <= 1:
-        return None, '仓位比例无效'
-    return {'ratio': ratio, 'low': 0, 'high': None, 'source': stock, 'policy': 'recommendation_market_v1'}, None
+    quantity = re.fullmatch(r'\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(?:股)?\s*', str(stock.get('shares') or ''))
+    requested = int(quantity[1].replace(',', '')) if quantity else None
+    return {'requested_shares': requested, 'source': stock, 'policy': 'recommendation_cash_v2'}, None
+
+
+def book_price(value):
+    try:
+        price = float(value)
+        return price if math.isfinite(price) and price > 0 else 0
+    except ValueError:
+        return 0
 
 
 def parse_quotes(text, now):
@@ -86,12 +86,13 @@ def parse_quotes(text, now):
         try:
             hk = sym.startswith('hk')
             timestamp = dt.datetime.strptime(values[30], '%Y/%m/%d %H:%M:%S' if hk else '%Y%m%d%H%M%S').replace(tzinfo=LOCAL).astimezone(UTC)
-            price, ask = float(values[3]), float(values[19])
+            price = float(values[3])
+            bid, ask = book_price(values[9]), book_price(values[19])
             # HK feed's lot field; an absent/invalid field must never default to 100.
             lot = int(values[60]) if hk else 100
-            if not all(math.isfinite(x) for x in (price, ask)) or price <= 0 or lot <= 0:
+            if not math.isfinite(price) or price <= 0 or lot <= 0:
                 continue
-            quotes[sym] = {'price': price, 'ask': ask, 'timestamp': timestamp.isoformat(), 'lot': lot, 'fetched': now.isoformat()}
+            quotes[sym] = {'price': price, 'ask': ask, 'bid': bid, 'timestamp': timestamp.isoformat(), 'lot': lot, 'fetched': now.isoformat()}
         except (ValueError, IndexError):
             continue
     return quotes
@@ -177,43 +178,58 @@ def process_orders(db, quotes, now):
         if price <= 0 or not math.isfinite(price):
             update('pending', '暂无有效卖一报价')
             continue
-        if price < plan['low'] or (plan['high'] is not None and price > plan['high']):
-            update('pending', '报价不在模型买入区间')
-            continue
         held = db.execute("SELECT 1 FROM paper_orders WHERE market=? AND code=? AND status='filled'", (order['market'], order['code'])).fetchone()
         if held:
             update('skipped', '已有持仓，不重复加仓')
             continue
-        account = db.execute('SELECT * FROM paper_accounts WHERE market=?', (order['market'],)).fetchone()
-        equity = account['cash']
-        known = True
-        for holding in db.execute("SELECT * FROM paper_orders WHERE market=? AND status='filled'", (order['market'],)):
-            mark = quotes.get(symbol(holding['market'], holding['code']))
-            if not fresh(mark, now):
-                known = False
-                break
-            equity += holding['shares'] * mark['price']
-        if not known:
-            update('pending', '持仓行情过期，暂无法计算仓位')
-            continue
-        budget = Decimal(str(equity)) * Decimal(str(plan['ratio']))
-        unit = Decimal(str(price))
-        if order['market'] == 'a' and order['code'].startswith('688'):
-            shares = int((budget / unit).to_integral_value(rounding=ROUND_FLOOR))
-            minimum = 200
-        else:
-            lot = q['lot']
-            shares = int((budget / unit / lot).to_integral_value(rounding=ROUND_FLOOR)) * lot
-            minimum = lot
-        cost = round(shares * price, 2)
+        cash = db.execute('SELECT cash FROM paper_accounts WHERE market=?', (order['market'],)).fetchone()[0]
+        star = order['market'] == 'a' and order['code'].startswith('688')
+        minimum = 200 if star else q['lot']
+        step = 1 if star else q['lot']
+        affordable = int(Decimal(str(cash)) // Decimal(str(price)))
+        target = max(minimum, plan['requested_shares'] or minimum)
+        shares = min(target, affordable) // step * step
         if shares < minimum:
-            update('skipped', '模型仓位不足一个交易单位')
+            update('pending', '可用余额不足一个交易单位')
             continue
-        if cost > account['cash']:
-            update('skipped', '可用资金不足，不擅自缩减仓位')
-            continue
+        cost = round(shares * price, 2)
         db.execute('UPDATE paper_accounts SET cash=round(cash-?,2) WHERE market=?', (cost, order['market']))
         db.execute("UPDATE paper_orders SET status='filled',reason='模拟成交',shares=?,price=?,filled=?,quote_time=? WHERE id=?", (shares, price, now.isoformat(), q['timestamp'], order['id']))
+
+
+def process_exits(db, quotes, now):
+    for order in db.execute("SELECT * FROM paper_orders WHERE status='filled'").fetchall():
+        plan = json.loads(order['plan'])
+        if 'exit_levels' not in plan:
+            original = db.execute('SELECT text FROM model_events WHERE id=? UNION ALL SELECT text FROM model_results WHERE id=? LIMIT 1',
+                                  (order['result_id'], order['result_id'])).fetchone()
+            plan['exit_levels'] = exit_levels(plan['source'], order['code'], original[0] if original else '')
+            db.execute('UPDATE paper_orders SET plan=? WHERE id=?', (json.dumps(plan, ensure_ascii=False), order['id']))
+        market = order['market']
+        quote = quotes.get(symbol(market, order['code']))
+        if not trading(now, market) or not fresh(quote, now):
+            continue
+        at = stamp(quote['timestamp'])
+        bought = stamp(order['filled'])
+        if at <= bought or not trading(at, market):
+            continue
+        if market == 'a' and at.astimezone(LOCAL).date() <= bought.astimezone(LOCAL).date():
+            continue
+        bid = quote.get('bid')
+        if not bid or not math.isfinite(bid) or bid <= 0:
+            continue
+        last = quote['price']
+        stop, target = plan['exit_levels']['stop'], plan['exit_levels']['target']
+        if stop is not None and last <= stop:
+            reason, threshold = '止损', stop
+        elif target is not None and last >= target:
+            reason, threshold = '止盈', target
+        else:
+            continue
+        db.execute('INSERT INTO paper_sales VALUES(?,?,?,?,?,?,?,?)',
+                   (order['id'], reason, threshold, last, bid, order['shares'], now.isoformat(), quote['timestamp']))
+        db.execute("UPDATE paper_orders SET status='sold' WHERE id=?", (order['id'],))
+        db.execute('UPDATE paper_accounts SET cash=round(cash+?,2) WHERE market=?', (round(bid * order['shares'], 2), market))
 
 
 def tick(path, now=None, provider=fetch_quotes):
@@ -221,8 +237,16 @@ def tick(path, now=None, provider=fetch_quotes):
     with closing(connect(path)) as db:
         with db:
             initialize(db, now)
+            from app.paper_capital import apply_config
+            apply_config(db, os.getenv('STOCK_PAPER_CONFIG_FILE'))
             collect_orders(db, now)
         symbols = sorted({symbol(row['market'], row['code']) for row in db.execute("SELECT market,code FROM paper_orders WHERE status IN ('pending','filled')")})
+        positions = db.execute("SELECT value FROM meta WHERE key='positions'").fetchone()
+        for holding in json.loads(positions[0]) if positions else []:
+            code = re.sub(r'^(?:sh|sz|hk)', '', str(holding.get('code', '')))
+            if re.fullmatch(r'\d{5,6}', code):
+                symbols.append(symbol('hk' if len(code) == 5 else 'a', code))
+        symbols = sorted(set(symbols))
         error = None
         try:
             quotes = provider(symbols, now) if symbols else {}
@@ -230,9 +254,11 @@ def tick(path, now=None, provider=fetch_quotes):
             quotes, error = {}, type(exc).__name__
             LOG.warning('Quote retrieval failed (%s)', error)
         with db:
+            db.execute('BEGIN IMMEDIATE')
             for sym, q in quotes.items():
                 db.execute('INSERT OR REPLACE INTO paper_quotes VALUES(?,?,?,?,?,?)', (sym, q['price'], q['ask'], q['timestamp'], q['lot'], q['fetched']))
             process_orders(db, quotes, now)
+            process_exits(db, quotes, now)
             db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('paper_sync', json.dumps({'time': now.isoformat(), 'error': error})))
 
 

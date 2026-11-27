@@ -10,6 +10,8 @@ WorkingDirectory=/opt/stock2027
 EnvironmentFile=/etc/stock2027.env
 Environment=STOCK_DB=/var/lib/stock2027/console.db
 Environment=STOCK_PASSWORD_FILE=/var/lib/stock2027-auth/password.hash
+Environment=STOCK_PAPER_CONFIG_FILE=/var/lib/stock2027-auth/paper-capital.json
+Environment=STOCK_SETTINGS_FILE=/var/lib/stock2027-auth/settings.json
 StateDirectory=stock2027-auth
 StateDirectoryMode=0700
 Environment=STOCK_HOST=127.0.0.1 STOCK_PORT=8790

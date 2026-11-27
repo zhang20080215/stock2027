@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS paper_accounts(market TEXT PRIMARY KEY, initial REAL NOT NULL, cash REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS paper_orders(id TEXT PRIMARY KEY, request_id TEXT NOT NULL, result_id TEXT NOT NULL, market TEXT NOT NULL, code TEXT NOT NULL, name TEXT, created TEXT NOT NULL, signal_time TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, plan TEXT NOT NULL, shares INTEGER, price REAL, filled TEXT, quote_time TEXT, UNIQUE(request_id,market,code));
 CREATE TABLE IF NOT EXISTS paper_quotes(symbol TEXT PRIMARY KEY, price REAL, ask REAL, timestamp TEXT, lot INTEGER, fetched TEXT);
+CREATE TABLE IF NOT EXISTS paper_sales(order_id TEXT PRIMARY KEY, reason TEXT NOT NULL, threshold REAL NOT NULL, last REAL NOT NULL, price REAL NOT NULL, shares INTEGER NOT NULL, filled TEXT NOT NULL, quote_time TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS history_bars(provider TEXT, market TEXT, code TEXT, time TEXT, close REAL, volume REAL, PRIMARY KEY(provider,market,code,time));
 """
 

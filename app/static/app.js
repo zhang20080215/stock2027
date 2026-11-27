@@ -5,19 +5,25 @@ const fmt = v => v === undefined || v === null || v === '' || !Number.isFinite(N
 const date = v => v ? new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Hong_Kong',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(v)) : '未记录';
 const channel = c => c?.includes('weixin') ? '微信' : c === 'unknown' ? '历史会话 · 来源未确认' : c || '来源未确认';
 const market = v => v === 'hk' ? '港股' : 'A 股';
-const names = {overview:'工作总览',scans:'选股记录',paper:'模拟盘',messages:'微信对话',positions:'持仓台账',notes:'智能体记忆',tasks:'执行记录',automation:'自动任务',rules:'策略与规则',project:'项目状态'};
+const names = {overview:'工作总览',scans:'选股记录',paper:'模拟盘',messages:'微信对话',positions:'持仓台账',notes:'智能体记忆',tasks:'执行记录',automation:'自动任务',rules:'策略与规则',project:'项目状态',settings:'设置'};
 const state = {overview:null,tab:'overview',generation:0,scan:null,stocks:[],messages:[],offset:0,taskOffset:0};
 const empty = (title, text='') => `<div class="empty"><strong>${esc(title)}</strong>${esc(text)}</div>`;
 const header = title => `<div class="page-head"><h1>${esc(title)}</h1></div>`;
 const refinedHead = (title, subtitle) => `<div class="page-head"><div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div><button id="pageRefresh" class="refresh-button">刷新</button></div>`;
 const metricTiles = items => `<div class="metrics">${items.map(([label,value,detail,href])=>`<${href?'a':'div'} class="metric" ${href?`href="${href}"`:''}><span class="metric-label">${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(detail||'')}</small></${href?'a':'div'}>`).join('')}</div>`;
+const holdingsHead = '<th>名称 / 代码</th><th class="numeric">市值</th><th class="numeric">持仓 / 可用</th><th class="numeric">成本 / 现价</th><th class="numeric">浮动盈亏</th><th class="numeric">盈亏比例</th><th class="numeric">仓位</th>';
+const percent = value => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : Number(value).toFixed(2)+'%';
+function holdingCells(p){
+  const color=p.pnl>0?'positive':p.pnl<0?'negative':'';
+  return `<td><strong>${esc(p.name)}</strong><div class="small">${esc(p.code)}${p.currency?' · '+esc(p.currency):''}</div></td><td class="numeric">${fmt(p.market_value)}</td><td class="numeric">${fmt(p.shares)}<div class="small">${fmt(p.available_shares)}</div></td><td class="numeric">${fmt(p.cost)}<div class="small" title="${p.stale?'缓存行情已过期':'最新缓存行情'}">${fmt(p.mark)}${p.mark!=null&&p.stale?' · 历史':''}</div></td><td class="numeric ${color}">${fmt(p.pnl)}</td><td class="numeric ${color}">${percent(p.pnl_pct)}</td><td class="numeric">${percent(p.position_pct)}</td>`;
+}
 function bindPageRefresh(){const b=$('#pageRefresh');if(b)b.addEventListener('click',async()=>{b.disabled=true;b.textContent='刷新中…';try{if(state.tab==='paper')await paper(state.generation,true);else await route();}catch(e){error(e.message);}finally{if(b.isConnected){b.disabled=false;b.textContent='刷新';}}});}
 const error = text => { $('#error').textContent=text; $('#error').hidden=!text; };
 
 async function api(path, options={}) {
   const res = await fetch('/api/' + path, options);
   const body = await res.json();
-  if (res.status === 401 && path !== 'login') { showLogin(); throw new Error('登录已过期，请重新输入访问口令'); }
+  if (res.status === 401 && path !== 'login' && !(path==='change-password' && body.error!=='请先登录')) { showLogin(); throw new Error('登录已过期，请重新输入访问口令'); }
   if (!res.ok) throw new Error(body.error || '读取失败，请稍后重试');
   return body;
 }
@@ -312,7 +318,7 @@ async function loadMessages(params,generation,context=null){
 async function positions(generation){
   const data=await api('positions');if(generation!==state.generation)return;
   const items=data.items||[], isHk=p=>/^(hk|\d{5}$)/i.test(String(p.code));
-  $('#main').innerHTML=refinedHead('持仓台账','持仓文件快照 · 人民币与港元分别展示')+`<div class="section-meta"><span>更新 ${date(data.updated)}</span><span>${items.length} 条记录</span></div><div class="filter-bar"><label class="search-field"><span>搜索持仓</span><input id="positionSearch" type="search" placeholder="股票名称或代码"></label><label><span>市场</span><select id="positionMarket"><option value="">全部市场</option><option value="a">A股 · CNY</option><option value="hk">港股 · HKD</option></select></label><label><span>排序</span><select id="positionSort"><option value="source">原始顺序</option><option value="amount">成本金额从高到低</option><option value="date">建仓日期从近到远</option></select></label><button id="positionReset">重置</button><span id="positionCount" class="filter-count" role="status"></span></div><div id="positionSummary"></div><div class="panel position-list"><table><thead><tr><th>股票</th><th>类型 / 币种</th><th class="numeric">成本价</th><th class="numeric">股数</th><th class="numeric">成本金额</th><th>建仓日期</th><th class="numeric">止损 / 目标</th><th>规则 / 备注</th><th>来源</th></tr></thead><tbody id="positionRows"></tbody></table></div>`;
+  $('#main').innerHTML=refinedHead('持仓台账','持仓文件快照 · 持股字段统一展示 · 人民币与港元分别统计')+`<div class="section-meta"><span>更新 ${date(data.updated)}</span><span>${items.length} 条记录</span></div><div class="filter-bar"><label class="search-field"><span>搜索持仓</span><input id="positionSearch" type="search" placeholder="股票名称或代码"></label><label><span>市场</span><select id="positionMarket"><option value="">全部市场</option><option value="a">A股 · CNY</option><option value="hk">港股 · HKD</option></select></label><label><span>排序</span><select id="positionSort"><option value="source">原始顺序</option><option value="amount">成本金额从高到低</option><option value="date">建仓日期从近到远</option></select></label><button id="positionReset">重置</button><span id="positionCount" class="filter-count" role="status"></span></div><p class="small holding-caption">可用数量与账户仓位以来源数据为准，缺失显示 —；现价采用缓存行情，历史行情不代表实时价格。</p><div id="positionSummary"></div><div class="panel position-list"><table><thead><tr>${holdingsHead}<th>详情 / 行情时间</th><th>来源</th></tr></thead><tbody id="positionRows"></tbody></table></div>`;
   function render(){
     const query=$('#positionSearch').value.trim().toLowerCase(),selected=$('#positionMarket').value,sort=$('#positionSort').value;
     const visible=items.filter(p=>(!query||`${p.name} ${p.code}`.toLowerCase().includes(query))&&(!selected||(isHk(p)?'hk':'a')===selected));
@@ -322,7 +328,10 @@ async function positions(generation){
     $('#positionSummary').innerHTML=metricTiles(['a','hk'].map(m=>{const group=visible.filter(p=>(isHk(p)?'hk':'a')===m);return [m==='a'?'A股成本金额 · CNY':'港股成本金额 · HKD',fmt(group.reduce((sum,p)=>sum+(Number(p.cost)*Number(p.shares)||0),0)),`${group.length} 只 · 当前筛选结果`];}));
     $('#positionRows').innerHTML=visible.map(p=>{
       const rules=[p.rules?.watch_line?`观察位：${fmt(p.rules.watch_line)} · ${esc(p.rules.watch_note||'')}`:'',p.rules?.add_condition?`加仓条件：${esc(p.rules.add_condition)}`:'',p.rules?.exit_triggers?`退出条件：${esc(p.rules.exit_triggers.join('；'))}`:'',p.notes?`备注：${esc(p.notes)}`:''].filter(Boolean);
-      return `<tr><td><strong>${esc(p.name)}</strong><div class="small">${esc(p.code)}</div></td><td>${esc(p.type||'持仓')}<div class="small">${isHk(p)?'HKD':'CNY'}</div></td><td class="numeric">${fmt(p.cost)}</td><td class="numeric">${fmt(p.shares)}</td><td class="numeric"><strong>${fmt(p.cost*p.shares)}</strong></td><td>${esc(p.opened_date||'未记录')}</td><td class="numeric">${p.stop?fmt(p.stop):'—'}<div class="small">目标 ${p.target?fmt(p.target):'—'}</div></td><td class="position-list-rules">${rules.length?`<details><summary>查看详情</summary>${rules.map(rule=>`<p>${rule}</p>`).join('')}</details>`:'—'}</td><td><a href="#messages?q=${encodeURIComponent(p.name)}">相关对话 ↗</a></td></tr>`;
+
+      const extra=[`类型：${esc(p.type||'持仓')}`,`建仓日期：${esc(p.opened_date||'未记录')}`,`止损：${fmt(p.stop)} · 目标：${fmt(p.target)}`,...rules];
+      return `<tr>${holdingCells({...p,currency:isHk(p)?'HKD':'CNY',available_shares:p.available_shares??p.available})}<td class="position-list-rules"><details><summary>持仓详情</summary>${extra.map(line=>`<p>${line}</p>`).join('')}</details><div class="small">${p.mark_time?date(p.mark_time)+(p.stale?' · 历史行情':''):'暂无行情'}</div></td><td><a href="#messages?q=${encodeURIComponent(p.name)}">相关对话 ↗</a></td></tr>`;
+
     }).join('')||`<tr><td colspan="9">${empty(items.length?'没有匹配的持仓':'暂无持仓记录',items.length?'试试其他关键词，或点击重置。':'同步持仓文件后将在这里显示。')}</td></tr>`;
   }
   $('#positionSearch').addEventListener('input',render);$('#positionMarket').addEventListener('change',render);$('#positionSort').addEventListener('change',render);
@@ -374,11 +383,13 @@ async function route(){
     else if(state.tab==='paper')await paper(generation);
     else if(['automation','rules','project'].includes(state.tab))await projectPage(generation);
     else if(state.tab==='notes')await notes(params,generation);
+    else if(state.tab==='settings')await settingsPage(params,generation);
     else await tasks(generation,params);
   }catch(e){if(generation!==state.generation)return;error(e.message);}
   finally{if(generation===state.generation){$('#main').setAttribute('aria-busy','false');bindPageRefresh();}}
 }
 async function start(){
+  try{applyBranding(await api('branding'));}catch{}
   try{state.overview=await api('overview');$('#login').hidden=true;$('#shell').hidden=false;noticeStatus(state.overview);await route();}catch(e){if(!$('#login').hidden)$('#loginError').textContent=e.message.includes('过期')?'':e.message;else error(e.message);}
 }
 $('#loginForm').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;$('#loginError').textContent='';try{await api('login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('#password').value})});$('#password').value='';await start();}catch(e){$('#loginError').textContent=e.message;}finally{b.disabled=false;}});
@@ -386,31 +397,44 @@ async function logout(){try{await api('logout',{method:'POST'});showLogin();$('#
 async function paper(generation, refresh=false){
   const data=await api('paper');if(generation!==state.generation||state.tab!=='paper')return;
   if(!refresh||!$('#paperContent')){
-    $('#main').innerHTML=refinedHead('模拟盘','独立模拟账户 · 人民币与港元分别统计')+`<div class="toolbar"><select id="paperView" aria-label="模拟盘类型"><option value="live">当前模拟盘</option><option value="history">11月以来逐次回放</option></select><select id="paperMarket" aria-label="模拟账户"><option value="a">A股 · 人民币</option><option value="hk">港股 · 港元</option></select><select id="paperFilter" aria-label="记录类型"><option value="filled">持仓 / 成交</option><option value="pending">待成交</option><option value="other">未执行</option><option value="all">全部</option></select><span class="small">推荐按现价买入 · 缺少仓位默认10% · 不等待原文条件 · 未计手续费及滑点</span></div><div id="paperContent"></div>`;
+    $('#main').innerHTML=refinedHead('模拟盘','独立模拟账户 · 人民币与港元分别统计')+`<div class="toolbar"><select id="paperView" aria-label="模拟盘类型"><option value="live">当前模拟盘</option><option value="history">11月以来逐次回放</option></select><select id="paperMarket" aria-label="模拟账户"><option value="all">全部 · A股 / 港股</option><option value="a">A股 · 人民币</option><option value="hk">港股 · 港元</option></select><select id="paperFilter" aria-label="记录类型"><option value="filled">持仓 / 成交</option><option value="pending">待成交</option><option value="other">未执行</option><option value="all">全部</option></select><button id="paperCapital">配置账户资金</button><span class="small">当前模拟盘按卖一价和可用余额买入 · 未指定股数时买一个最小交易单位 · 未计手续费及滑点</span></div><div id="paperContent"></div>`;
+    $('#paperCapital').addEventListener('click',openPaperCapital);
     $('#paperView').addEventListener('change',()=>{$('#paperFilter').value=$('#paperView').value==='history'?'all':'filled';renderPaper(state.paper);});$('#paperMarket').addEventListener('change',()=>renderPaper(state.paper));$('#paperFilter').addEventListener('change',()=>renderPaper(state.paper));
   }
   state.paper=data;renderPaper(data);
 }
 function renderPaper(data){
-  if($('#paperView')?.value==='history'){renderReplay(data);return;}
-  const m=$('#paperMarket').value,filter=$('#paperFilter').value,a=data.accounts.find(x=>x.market===m);
-  if(!a){$('#paperContent').innerHTML=empty('模拟盘正在初始化');return;}
-  const orders=data.orders.filter(o=>o.market===m&&(filter==='all'||(filter==='other'?!['filled','pending'].includes(o.status):o.status===filter)));
-  const statuses={filled:'已成交',pending:'待成交',review:'需核对',skipped:'未执行',expired:'已过期'};
-  const h=`<div class="metrics">${[['总资产',a.equity],['可用资金',a.cash],['持仓市值',a.value],['浮动盈亏',a.pnl]].map(([label,value])=>`<div class="metric"><span class="metric-label">${label}</span><strong>${fmt(value)}</strong></div>`).join('')}</div><p class="small">初始资金 ${fmt(a.initial)} · 启用 ${date(data.started)} · 检查 ${date(data.sync.time)}${a.stale?' · 持仓估值含过期报价':''}${data.sync.error?' · 行情连接失败':''}</p><section class="panel table-panel"><div class="scroll"><table><thead><tr><th>股票</th><th>状态</th><th>模型仓位</th><th>股数</th><th>成交价</th><th>最新价</th><th>浮动盈亏</th><th>时间 / 原因</th><th>来源</th></tr></thead><tbody>${orders.map(o=>`<tr><td><strong>${esc(o.name)}</strong><div class="small">${esc(o.code)}</div></td><td>${esc(statuses[o.status]||o.status)}</td><td>${esc(o.plan.source?.position||'—')}</td><td>${fmt(o.shares)}</td><td>${fmt(o.price)}</td><td>${o.status==='filled'?fmt(o.mark):'—'}${o.status==='filled'&&o.stale?'<div class="small">历史报价</div>':''}</td><td>${fmt(o.pnl)}</td><td>${date(o.filled||o.signal_time)}<div class="small">${esc(o.reason)}</div>${o.mark_time&&o.status==='filled'?`<div class="small">报价 ${date(o.mark_time)}</div>`:''}</td><td><a href="#messages?anchor=${encodeURIComponent(o.result_id)}">原文</a></td></tr>`).join('')}</tbody></table></div>${orders.length?'':empty(filter==='filled'?'暂无模拟持仓':'暂无记录')}</section>`;
-  if($('#paperContent').innerHTML!==h)$('#paperContent').innerHTML=h;
+  const history=$('#paperView')?.value==='history',selected=$('#paperMarket').value;
+  $('#paperCapital').disabled=history||!data.capital_configured;
+  const markets=selected==='all'?['a','hk']:[selected],request=data.capital_request,result=data.capital_result;
+  const pending=request&&request.id!==result?.id;
+  const notice=!history&&(pending?'资金配置已保存，等待后台应用（通常30秒内）':result?.status==='error'?'资金配置未生效：'+result.error:state.capitalNotice||'');
+  const html=(notice?'<div class="notice" role="status">'+esc(notice)+'</div>':'')+markets.map(m=>'<section class="paper-account-section"><div class="section-heading"><h2>'+market(m)+'账户</h2><span class="pill neutral">'+(m==='hk'?'HKD · 港元':'CNY · 人民币')+'</span></div>'+(history?replayMarketHtml(data,m):paperMarketHtml(data,m))+'</section>').join('');
+  if($('#paperContent').innerHTML!==html)$('#paperContent').innerHTML=html;
 }
-function renderReplay(data){
-  const report=data.replay;if(!report){$('#paperContent').innerHTML=empty('暂无历史回放');return;}
-  const m=$('#paperMarket').value,filter=$('#paperFilter').value,a=report.accounts.find(x=>x.market===m);
+function paperMarketHtml(data,m){
+  const filter=$('#paperFilter').value,a=data.accounts.find(x=>x.market===m);
+  if(!a)return empty('模拟盘正在初始化');
+  const orders=data.orders.filter(o=>o.market===m&&o.status!=='sold'&&(filter==='all'||(filter==='other'?!['filled','pending'].includes(o.status):o.status===filter)));
+  const statuses={filled:'已成交',pending:'待成交',review:'需核对',skipped:'未执行',expired:'已过期'};
+  const h=`<div class="metrics">${[['总资产',a.equity],['可用资金',a.cash],['持仓市值',a.value],['总盈亏',a.pnl]].map(([label,value])=>`<div class="metric"><span class="metric-label">${label}</span><strong>${fmt(value)}</strong></div>`).join('')}</div><p class="small">${m==='hk'?'HKD':'CNY'} · 可卖后，最新价触及止盈或止损点位时按买一价卖出全部持仓。点位显示“—”表示该侧未启用。 · 初始资金 ${fmt(a.initial)} · 启用 ${date(data.started)} · 检查 ${date(data.sync.time)}${a.stale?' · 持仓估值含过期报价':''}${data.sync.error?' · 行情连接失败':''}</p><section class="panel table-panel"><div class="scroll"><table><thead><tr>${holdingsHead}<th class="numeric">止盈价</th><th class="numeric">止损价</th><th>状态 / 详情</th><th>来源</th></tr></thead><tbody>${orders.map(o=>`<tr>${holdingCells({name:o.name,code:o.code,shares:o.status==='filled'?o.shares:null,available_shares:o.available_shares,cost:o.price,stale:o.stale,mark:o.status==='filled'?o.mark:null,market_value:o.market_value,pnl:o.pnl,pnl_pct:o.pnl_pct,position_pct:o.position_pct})}<td class="numeric">${fmt(o.plan.exit_levels?.target)}</td><td class="numeric">${fmt(o.plan.exit_levels?.stop)}</td><td><span class="pill neutral">${esc(statuses[o.status]||o.status)}</span><div class="small">${date(o.filled||o.signal_time)}</div><details class="holding-detail"><summary>查看详情</summary><p>${esc(o.reason)}</p><p>原文仓位：${esc(o.plan.source?.position||'未提供')}</p>${o.mark_time&&o.status==='filled'?`<p>行情 ${date(o.mark_time)}${o.stale?' · 历史行情':''}</p>`:''}</details></td><td><a href="#messages?anchor=${encodeURIComponent(o.result_id)}">原文</a></td></tr>`).join('')}</tbody></table></div>${orders.length?'':empty(filter==='filled'?'暂无模拟持仓':'暂无记录')}</section>`;
+  const sold=data.orders.filter(o=>o.market===m&&o.sale).sort((a,b)=>b.sale.filled.localeCompare(a.sale.filled));
+  if(!sold.length||!['all','filled'].includes(filter))return h;
+  return h+`<section class="panel table-panel"><h3>卖出成交</h3><div class="scroll"><table><thead><tr><th>名称 / 代码</th><th>卖出时间</th><th>原因</th><th>触发点位</th><th>卖出价</th><th>股数</th><th>买入价</th><th>已实现盈亏</th><th>来源</th></tr></thead><tbody>${sold.map(o=>`<tr><td>${esc(o.name)}<div class="small">${esc(o.code)}</div></td><td>${date(o.sale.filled)}</td><td>${esc(o.sale.reason)}</td><td>${fmt(o.sale.threshold)}</td><td>${fmt(o.sale.price)}</td><td>${fmt(o.sale.shares)}</td><td>${fmt(o.price)}</td><td>${fmt(o.sale.realized_pnl)}</td><td><a href="#messages?anchor=${encodeURIComponent(o.result_id)}">原文</a></td></tr>`).join('')}</tbody></table></div></section>`;
+}
+function replayMarketHtml(data,m){
+  const report=data.replay;if(!report)return empty('暂无历史回放');
+  const filter=$('#paperFilter').value,a=report.accounts.find(x=>x.market===m);
+  if(!a)return empty('此市场暂无回放账户');
   const orders=report.orders.filter(o=>o.market===m&&(filter==='all'||(filter==='filled'?o.status==='estimated':filter==='pending'?false:o.status!=='estimated')));
   const labels={estimated:'估算买入',review:'需核对',missing:'行情缺失',unmet:'快照未满足',skipped:'未执行'};
   const events=report.events||[];
   const eventList=`<details><summary>逐次回复时间线 · ${events.length} 次</summary><div class="scroll"><table><thead><tr><th>发布时间</th><th>请求</th><th>已提取股票数</th><th>原文</th></tr></thead><tbody>${events.map(e=>`<tr><td>${date(e.timestamp)}</td><td>${esc(e.prompt)}</td><td>${e.stock_count}</td><td><a href="#messages?anchor=${encodeURIComponent(e.id)}">查看</a></td></tr>`).join('')}</tbody></table></div></details>`;
-  $('#paperContent').innerHTML=`<div class="metrics">${[['估算总资产',a.equity],['可用资金',a.cash],['持仓估值',a.value],['估算盈亏',a.pnl]].map(([label,value])=>`<div class="metric"><span class="metric-label">${label}</span><strong>${fmt(value)}</strong></div>`).join('')}</div><p class="small">${messageDay(report.start)} 起 · ${report.result_count} 条最终回复 · ${report.stock_count} 条逐股结果 · ${report.counts.estimated||0} 笔估算买入</p><details><summary>回放口径</summary><p>${esc(report.assumptions)}</p></details><section class="panel table-panel"><div class="scroll"><table><thead><tr><th>股票</th><th>状态</th><th>仓位</th><th>股数</th><th>估算买入价</th><th>期末快照价</th><th>估算盈亏</th><th>时间 / 原因</th><th>来源</th></tr></thead><tbody>${orders.map(o=>`<tr><td>${esc(o.name)}<div class="small">${esc(o.code)}</div></td><td>${esc(labels[o.status])}</td><td>${esc(o.position||'—')}</td><td>${fmt(o.shares)}</td><td>${fmt(o.price)}</td><td>${fmt(o.mark)}${o.mark_time?`<div class="small">${date(o.mark_time)}</div>`:''}</td><td>${fmt(o.pnl)}</td><td>${date(o.filled||o.signal_time)}<div class="small">${esc(o.reason)}</div></td><td><a href="#messages?anchor=${encodeURIComponent(o.result_id)}">原文</a></td></tr>`).join('')}</tbody></table></div>${orders.length?'':empty('暂无记录')}</section>`;
-  $('#paperContent').insertAdjacentHTML('beforeend',eventList);
-  if(report.provider==='tushare')$('#paperContent').insertAdjacentHTML('afterbegin','<p class="small">行情来源：Tushare · A股1分钟 · 港股分钟未授权 · 不使用模型现价补单</p>');
-  if(a.valuation_incomplete)$('#paperContent').insertAdjacentHTML('afterbegin','<p class="small">部分持仓缺少后续行情，按成本占位；估算总资产不是完整期末净值。</p>');
+  let html=`<div class="metrics">${[['估算总资产',a.equity],['可用资金',a.cash],['持仓估值',a.value],['估算盈亏',a.pnl]].map(([label,value])=>`<div class="metric"><span class="metric-label">${label}</span><strong>${fmt(value)}</strong></div>`).join('')}</div><p class="small">${messageDay(report.start)} 起 · ${report.result_count} 条最终回复 · ${report.stock_count} 条逐股结果 · ${report.counts.estimated||0} 笔估算买入</p><details><summary>回放口径</summary><p>${esc(report.assumptions)}</p></details><section class="panel table-panel"><div class="scroll"><table><thead><tr>${holdingsHead}<th>回放状态 / 详情</th><th>来源</th></tr></thead><tbody>${orders.map(o=>`<tr>${holdingCells({name:o.name,code:o.code,shares:o.status==='estimated'?o.shares:null,cost:o.price,mark:o.mark,stale:true,market_value:o.mark!=null&&o.shares!=null?o.mark*o.shares:null,pnl:o.pnl,pnl_pct:o.price>0&&o.mark!=null?(o.mark/o.price-1)*100:null,position_pct:!a.valuation_incomplete&&a.equity>0&&o.mark!=null&&o.shares!=null?o.mark*o.shares/a.equity*100:null})}<td>${esc(labels[o.status])}<div class="small">${date(o.filled||o.signal_time)}</div><details class="holding-detail"><summary>查看详情</summary><p>${esc(o.reason)}</p><p>原文仓位：${esc(o.position||'—')}</p>${o.mark_time?`<p>快照 ${date(o.mark_time)}</p>`:''}</details></td><td><a href="#messages?anchor=${encodeURIComponent(o.result_id)}">原文</a></td></tr>`).join('')}</tbody></table></div>${orders.length?'':empty('暂无记录')}</section>`;
+  html+=eventList;
+  if(report.provider==='tushare')html='<p class="small">行情来源：Tushare · A股1分钟 · 港股分钟未授权 · 不使用模型现价补单</p>'+html;
+  if(a.valuation_incomplete)html='<p class="small">部分持仓缺少后续行情，按成本占位；估算总资产不是完整期末净值。</p>'+html;
+  return html;
 }
 $('#logout').addEventListener('click',()=>$('#logoutDialog').showModal());
 $('#cancelLogout').addEventListener('click',()=>$('#logoutDialog').close());
@@ -458,15 +482,55 @@ async function projectPage(generation){
     $('#expandRules').addEventListener('click',()=>document.querySelectorAll('[data-rule]:not([hidden]) details').forEach(x=>x.open=true));$('#collapseRules').addEventListener('click',()=>document.querySelectorAll('[data-rule] details').forEach(x=>x.open=false));
   }
 }
-$('#changePassword').addEventListener('click',()=>{$('#passwordForm').reset();$('#passwordError').textContent='';$('#passwordDialog').showModal();});
-$('#cancelPassword').addEventListener('click',()=>$('#passwordDialog').close());
-$('#passwordDialog').addEventListener('close',()=>{$('#passwordForm').reset();$('#passwordError').textContent='';});
-$('#passwordForm').addEventListener('submit',async e=>{
-  e.preventDefault();
-  if($('#newPassword').value!==$('#confirmPassword').value){$('#passwordError').textContent='两次输入的新口令不一致';return;}
-  const button=e.currentTarget.querySelector('[type="submit"]');button.disabled=true;
+function openPaperCapital(){
+  const d=state.paper, pending=d.capital_request&&d.capital_request.id!==d.capital_result?.id;
+  for(const [market,input] of [['a','#capitalA'],['hk','#capitalHk']]){
+    const account=d.accounts.find(a=>a.market===market);
+    $(input).value=pending?d.capital_request.initial[market]:account?.initial||100000;
+  }
+  $('#capitalError').textContent='';previewCapital();$('#capitalDialog').showModal();
+}
+function previewCapital(){
+  for(const [market,input,output] of [['a','#capitalA','#capitalAPreview'],['hk','#capitalHk','#capitalHkPreview']]){
+    const a=state.paper?.accounts.find(a=>a.market===market),value=Number($(input).value);
+    $(output).textContent=a&&value>0?`调整后现金约 ${fmt(a.cash+value-a.initial)} · 总资产约 ${fmt(a.equity+value-a.initial)}`:'';
+  }
+}
+$('#capitalA').addEventListener('input',previewCapital);$('#capitalHk').addEventListener('input',previewCapital);
+$('#cancelCapital').addEventListener('click',()=>$('#capitalDialog').close());
+$('#capitalForm').addEventListener('submit',async e=>{
+  e.preventDefault();const button=e.currentTarget.querySelector('[type="submit"]');button.disabled=true;$('#capitalError').textContent='';
   try{
-    await api('change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:$('#currentPassword').value,new_password:$('#newPassword').value})});
-    $('#passwordDialog').close();$('#passwordForm').reset();showLogin();$('#password').value='';$('#loginError').textContent='口令已修改，请使用新口令登录';
-  }catch(err){$('#passwordError').textContent=err.message;}finally{button.disabled=false;}
+    await api('paper-capital',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initial:{a:$('#capitalA').value,hk:$('#capitalHk').value}})});
+    state.capitalNotice='账户资金配置已保存';$('#capitalDialog').close();if(state.tab==='paper')await paper(state.generation,true);
+  }catch(err){$('#capitalError').textContent=err.message;}finally{button.disabled=false;}
 });
+function applyBranding(data){
+  const name=data.product_name||'产品';state.productName=name;
+  document.title=name;$('#brandName').textContent=name;$('#loginProductName').textContent=name;$('#loginSubmit').textContent='进入'+name;
+}
+async function settingsPage(params,generation){
+  const data=await api('settings');if(generation!==state.generation)return;applyBranding(data);
+  $('#main').innerHTML=header('设置')+`<p class="small">管理产品名称与访问口令</p><div class="settings-tabs" role="tablist" aria-label="设置分类"><button id="nameTab" role="tab" aria-controls="namePanel" aria-selected="true" tabindex="0">产品名称</button><button id="passwordTab" role="tab" aria-controls="passwordPanel" aria-selected="false" tabindex="-1">口令设置</button></div><section id="namePanel" role="tabpanel" aria-labelledby="nameTab" class="panel settings-panel"><h2>产品名称</h2><p class="small">用于侧栏、登录页和浏览器标题，保存后立即生效。</p><form id="nameForm"><label for="productName">名称</label><input id="productName" name="product_name" type="text" required maxlength="32" value="${esc(data.product_name)}" placeholder="输入产品名称"><div class="name-help"><span>1–32个字符</span><span id="nameCount">${data.product_name.length} / 32</span></div><div class="name-preview"><span class="small">名称预览</span><strong id="namePreview">${esc(data.product_name)}</strong></div><p id="nameError" class="negative" role="alert"></p><p id="nameSaved" class="small" role="status"></p><button type="submit" class="primary" ${data.editable?'':'disabled'}>保存名称</button>${data.editable?'':'<p class="small">尚未配置设置存储，请联系管理员。</p>'}</form></section><section id="passwordPanel" role="tabpanel" aria-labelledby="passwordTab" class="panel settings-panel" hidden><h2>修改访问口令</h2><p class="small">可用当前口令或超级口令验证。修改成功后所有设备需要重新登录。</p><form id="passwordForm"><label for="currentPassword">当前口令或超级口令</label><input id="currentPassword" type="password" autocomplete="current-password" required maxlength="256"><label for="newPassword">新口令（至少6个字符）</label><input id="newPassword" type="text" autocomplete="new-password" required minlength="6" maxlength="256"><label for="confirmPassword">确认新口令</label><input id="confirmPassword" type="text" autocomplete="new-password" required minlength="6" maxlength="256"><p class="small">新口令和确认口令明文显示。</p><p id="passwordError" class="negative" role="alert"></p><div class="settings-actions"><button type="submit" class="primary">保存新口令</button><button type="reset">清空</button></div></form></section>`;
+  function selectTab(section,focus=false){
+    for(const name of ['name','password']){const selected=section===name,tab=$('#'+name+'Tab');tab.setAttribute('aria-selected',selected);tab.tabIndex=selected?0:-1;$('#'+name+'Panel').hidden=!selected;if(selected&&focus)tab.focus();}
+    if(section==='name'){$('#passwordForm').reset();$('#passwordError').textContent='';}
+    history.replaceState(null,'','#settings?section='+section);
+  }
+  for(const name of ['name','password']){
+    const tab=$('#'+name+'Tab');tab.addEventListener('click',()=>selectTab(name));
+    tab.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();selectTab(e.key==='Home'?'name':e.key==='End'?'password':name==='name'?'password':'name',true);}});
+  }
+  selectTab(params.get('section')==='password'?'password':'name');
+  $('#productName').addEventListener('input',()=>{$('#nameCount').textContent=$('#productName').value.length+' / 32';$('#namePreview').textContent=$('#productName').value.trim()||'产品名称';$('#nameSaved').textContent='';$('#nameError').textContent='';});
+  $('#nameForm').addEventListener('submit',async e=>{
+    e.preventDefault();const form=e.currentTarget,button=form.querySelector('button');button.disabled=true;$('#nameError').textContent='';$('#nameSaved').textContent='';
+    try{const result=await api('settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_name:$('#productName').value})});applyBranding(result);if(!form.isConnected)return;$('#productName').value=result.product_name;$('#namePreview').textContent=result.product_name;$('#nameCount').textContent=result.product_name.length+' / 32';$('#nameSaved').textContent='名称已保存';}catch(err){if(form.isConnected)$('#nameError').textContent=err.message;}finally{button.disabled=false;}
+  });
+  $('#passwordForm').addEventListener('reset',e=>{e.currentTarget.querySelector('#passwordError').textContent='';});
+  $('#passwordForm').addEventListener('submit',async e=>{
+    e.preventDefault();if($('#newPassword').value!==$('#confirmPassword').value){$('#passwordError').textContent='两次输入的新口令不一致';return;}
+    const form=e.currentTarget,button=form.querySelector('[type="submit"]');button.disabled=true;$('#passwordError').textContent='';
+    try{await api('change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:$('#currentPassword').value,new_password:$('#newPassword').value})});form.reset();showLogin();$('#password').value='';$('#loginError').textContent='口令已修改，请使用新口令登录';}catch(err){if(form.isConnected)$('#passwordError').textContent=err.message;}finally{button.disabled=false;}
+  });
+}

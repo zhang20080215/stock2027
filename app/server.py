@@ -8,6 +8,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import secrets
@@ -22,6 +23,21 @@ STATIC = Path(__file__).parent / 'static'
 LOG = logging.getLogger(__name__)
 
 
+def holding_values(cost, shares, mark, equity=None):
+    def number(value):
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else None
+        except (TypeError, ValueError):
+            return None
+    cost, shares, mark, equity = map(number, (cost, shares, mark, equity))
+    value = round(mark * shares, 2) if mark is not None and shares is not None else None
+    pnl = round((mark - cost) * shares, 2) if value is not None and cost is not None else None
+    return {'market_value': value, 'pnl': pnl,
+            'pnl_pct': (mark / cost - 1) * 100 if mark is not None and cost is not None and cost > 0 else None,
+            'position_pct': value / equity * 100 if value is not None and equity is not None and equity > 0 else None}
+
+
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
     return salt + ':' + hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 300000).hex()
@@ -32,6 +48,8 @@ class Application:
         self.db_path = db_path
         self.password = password
         self.master_password = master_password
+        self.paper_config_file = os.getenv('STOCK_PAPER_CONFIG_FILE')
+        self.settings_file = os.getenv('STOCK_SETTINGS_FILE')
         self.sessions = {}
         self.attempts = collections.defaultdict(list)
         self.lock = threading.Lock()
@@ -102,6 +120,8 @@ class Application:
             return token, 200
 
     def api(self, endpoint, params):
+        if endpoint == 'settings':
+            return {**self.branding(), 'editable': bool(self.settings_file)}
         def one(name, default=''):
             return params.get(name, [default])[0]
 
@@ -180,19 +200,36 @@ class Application:
                 result[0]['data'] = json.loads(result[0]['data'])
                 return result[0]
             if endpoint == 'positions':
-                return {'items': json.loads(meta('positions', '[]')), 'updated': meta('positions_updated')}
-            if endpoint == 'paper':
                 from app.paper import symbol, fresh, UTC
                 now = dt.datetime.now(UTC)
                 quotes = {q['symbol']: q for q in rows('SELECT * FROM paper_quotes')}
+                items = json.loads(meta('positions', '[]'))
+                for item in items:
+                    code = str(item.get('code', '')).removeprefix('sh').removeprefix('sz').removeprefix('hk')
+                    quote = quotes.get(symbol('hk' if len(code) == 5 else 'a', code))
+                    item['mark'] = quote['price'] if quote else None
+                    item['mark_time'] = quote['timestamp'] if quote else None
+                    item['stale'] = not fresh(quote, now)
+                    item.update(holding_values(item.get('cost'), item.get('shares'), item['mark']))
+                return {'items': items, 'updated': meta('positions_updated')}
+            if endpoint == 'paper':
+                from app.paper import symbol, fresh, UTC
+                db.execute('BEGIN')
+                now = dt.datetime.now(UTC)
+                quotes = {q['symbol']: q for q in rows('SELECT * FROM paper_quotes')}
+                sales = {s['order_id']: s for s in rows('SELECT * FROM paper_sales')}
                 orders = rows('SELECT * FROM paper_orders ORDER BY created DESC,id DESC')
                 for order in orders:
                     order['plan'] = json.loads(order['plan'])
+                    order['sale'] = sales.get(order['id'])
                     quote = quotes.get(symbol(order['market'], order['code']))
                     order['mark'] = quote['price'] if quote else None
                     order['mark_time'] = quote['timestamp'] if quote else None
                     order['stale'] = not fresh(quote, now)
                     order['pnl'] = round((order['mark'] - order['price']) * order['shares'], 2) if order['status'] == 'filled' and quote else None
+                    if order['sale']:
+                        sale = order['sale']
+                        sale['realized_pnl'] = round(round(sale['price'] * sale['shares'], 2) - round(order['price'] * order['shares'], 2), 2)
                 accounts = rows('SELECT * FROM paper_accounts ORDER BY market')
                 for account in accounts:
                     held = [o for o in orders if o['market'] == account['market'] and o['status'] == 'filled']
@@ -200,7 +237,15 @@ class Application:
                     account['equity'] = round(account['cash'] + account['value'], 2)
                     account['pnl'] = round(account['equity'] - account['initial'], 2)
                     account['stale'] = any(o['stale'] for o in held)
-                return {'accounts': accounts, 'orders': orders, 'started': meta('paper_started'), 'sync': json.loads(meta('paper_sync', '{}')), 'replay': json.loads(meta('paper_replay', 'null'))}
+                for order in orders:
+                    account = next((a for a in accounts if a['market'] == order['market']), None)
+                    if order['status'] == 'filled':
+                        order.update(holding_values(order['price'], order['shares'], order['mark'], account['equity'] if account else None))
+                        from app.paper import LOCAL, stamp
+                        order['available_shares'] = order['shares'] if order['market'] == 'hk' or stamp(order['filled']).astimezone(LOCAL).date() < now.astimezone(LOCAL).date() else 0
+                from app.paper_capital import read_config
+                return {'accounts': accounts, 'orders': orders, 'started': meta('paper_started'), 'sync': json.loads(meta('paper_sync', '{}')), 'replay': json.loads(meta('paper_replay', 'null')),
+                        'capital_configured': bool(self.paper_config_file), 'capital_request': read_config(self.paper_config_file), 'capital_result': json.loads(meta('paper_capital_config', 'null'))}
             if endpoint == 'tasks':
                 status = one('status')
                 clause, args = '', []
@@ -268,6 +313,38 @@ class Application:
                 return parsed if endpoint == 'selection-reports' else None
             return None
 
+    def branding(self):
+        if self.settings_file and Path(self.settings_file).exists():
+            try:
+                data = json.loads(Path(self.settings_file).read_text())
+                name = data.get('product_name')
+                if isinstance(name, str) and 1 <= len(name.strip()) <= 32 and name.isprintable():
+                    return {'product_name': name.strip()}
+            except (OSError, ValueError, AttributeError):
+                LOG.warning('Product settings unavailable')
+        return {'product_name': '产品'}
+
+    def save_settings(self, name):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 32 or not name.isprintable():
+            return 400, {'error': '产品名称需要1至32个字符，不能包含换行或控制字符'}
+        if not self.settings_file:
+            return 503, {'error': '尚未配置产品设置存储'}
+        path = Path(self.settings_file)
+        temporary = path.with_name(path.name + '.' + secrets.token_hex(8) + '.tmp')
+        try:
+            with self.lock:
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'w') as output:
+                    json.dump({'product_name': name.strip()}, output, ensure_ascii=False)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, path)
+        except OSError:
+            return 503, {'error': '产品名称保存失败，请稍后重试'}
+        finally:
+            temporary.unlink(missing_ok=True)
+        return 200, {'product_name': name.strip()}
+
 
 def handler(app):
     class Handler(BaseHTTPRequestHandler):
@@ -295,6 +372,8 @@ def handler(app):
             url = urlsplit(self.path)
             if url.path == '/healthz':
                 return self.respond(200, {'ok': True})
+            if url.path == '/api/branding':
+                return self.respond(200, app.branding())
             assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/app.css': ('app.css', 'text/css; charset=utf-8')}
             if url.path in assets:
                 name, mime = assets[url.path]
@@ -316,9 +395,9 @@ def handler(app):
             origin = self.headers.get('Origin')
             if origin and urlsplit(origin).netloc != self.headers.get('Host'):
                 return self.respond(403, {'error': '请求来源不正确'})
-            if self.path not in ('/api/login', '/api/logout', '/api/change-password'):
+            if self.path not in ('/api/login', '/api/logout', '/api/change-password', '/api/paper-capital', '/api/settings'):
                 return self.respond(405, {'error': '当前版本仅支持只读操作'})
-            if self.path == '/api/change-password' and not app.authenticated(self.headers.get('Cookie')):
+            if self.path in ('/api/change-password', '/api/paper-capital', '/api/settings') and not app.authenticated(self.headers.get('Cookie')):
                 return self.respond(401, {'error': '请先登录'})
             if self.path == '/api/logout':
                 jar = cookies.SimpleCookie(self.headers.get('Cookie', ''))
@@ -331,6 +410,26 @@ def handler(app):
                 if not 0 < size <= 4096:
                     return self.respond(400, {'error': '请求长度不正确'})
                 data = json.loads(self.rfile.read(size))
+                if self.path == '/api/settings':
+                    status, result = app.save_settings(data.get('product_name'))
+                    return self.respond(status, result)
+                if self.path == '/api/paper-capital':
+                    from app.paper_capital import amounts, save_config, validate_cash
+                    if not app.paper_config_file:
+                        return self.respond(503, {'error': '尚未配置模拟账户资金存储'})
+                    try:
+                        values = amounts(data.get('initial'))
+                        with closing(connect(app.db_path, readonly=True)) as db:
+                            accounts = db.execute('SELECT * FROM paper_accounts').fetchall()
+                            if len(accounts) != 2:
+                                return self.respond(409, {'error': '账户正在初始化，请稍后重试'})
+                            validate_cash(accounts, values)
+                        config = save_config(app.paper_config_file, values)
+                        return self.respond(200, {'ok': True, 'request': config})
+                    except ValueError as exc:
+                        return self.respond(400, {'error': str(exc)})
+                    except (OSError, sqlite3.Error):
+                        return self.respond(503, {'error': '资金配置保存失败，请稍后重试'})
                 if self.path == '/api/change-password':
                     current, new = data.get('current_password'), data.get('new_password')
                     if not isinstance(current, str) or not isinstance(new, str):

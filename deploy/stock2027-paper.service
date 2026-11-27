@@ -9,6 +9,7 @@ User=root
 Group=ubuntu
 WorkingDirectory=/opt/stock2027
 Environment=STOCK_DB=/var/lib/stock2027/console.db
+Environment=STOCK_PAPER_CONFIG_FILE=/var/lib/stock2027-auth/paper-capital.json
 ExecStart=/usr/bin/python3 -m app.paper
 Restart=on-failure
 RestartSec=10
