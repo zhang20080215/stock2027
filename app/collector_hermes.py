@@ -16,7 +16,7 @@ from app.store import connect
 LOG = logging.getLogger(__name__)
 UTC = dt.timezone.utc
 IMPORT_VERSION = 'hermes-1'
-SCANNER_SCRIPT = re.compile(r'[\w./-]*(scan|screen|momentum|trinity|mdata)[\w-]*\.py', re.I)
+SCANNER_SCRIPT = re.compile(r'[\w./-]*(?:scan|screen|momentum|trinity|mdata)[\w-]*\.py', re.I)
 
 
 def iso(value):
