@@ -11,13 +11,18 @@ def content_text(content):
 
 
 def technical_request(prompt):
-    return bool(re.search(r'建立|创建|开发|编写|修复|安装|配置|脚本|部署|代码|界面|API|密钥|怎么(?:做|弄)|步骤|流程|原理|大模型能力', prompt, re.I))
+    # Only the opening of the request is classified: scheduled skill prompts embed
+    # long instructions that mention scripts, APIs and configuration.
+    head = prompt.lstrip()[:400]
+    if prompt.lstrip().startswith('[IMPORTANT: The user has invoked'):
+        return False
+    return bool(re.search(r'建立|创建|开发|编写|修复|安装|配置|脚本|部署|代码|界面|API|密钥|怎么(?:做|弄)|步骤|流程|原理|大模型能力|有哪些能力|能力概览|图形化|控制台|数据库表|组件|依赖', head, re.I))
 
 
 def selection_request(prompt):
     if technical_request(prompt):
         return False
-    return bool(re.search(r'全局选股|(?:帮我|给我|重新|再|今天|今日|现在|全市场|A股|港股).{0,10}(?:选股|筛股|选几只|选一只)|^(?:选股|选几只股票|扫描全市场)[。！!\s]*$', prompt, re.I))
+    return bool(re.search(r'全局选股|(?:帮我|给我|重新|再|今天|今日|现在|全市场|A股|港股).{0,10}(?:选股|筛股|选几只|选一只)|^(?:选股|选几只股票|扫描全市场)[。！!\s]*$|选股|筛股|选几只|选一只|推荐|复盘|早报|开盘|盘前|盘中|收盘|竞价|建仓|加仓|减仓|清仓|调仓|持仓|布局|标的|扫描|止损|买入|卖出|还能拿|要不要买', prompt, re.I))
 
 
 def completed_selections(rows, session_id, scanner_pattern, keep_all=False):
@@ -85,7 +90,32 @@ def clean_line(line):
     return re.sub(r'^\s*(?:#{1,6}\s*|[-*]\s+)', '', line).replace('**', '').replace('`', '').strip()
 
 
-def extract_model_stocks(text):
+GENERIC_NAME = re.compile(r'(半导体|科技|芯片|华夏|富国|中国|股份|集团|ETF|A股)')
+
+
+def resolve_code(name, name_codes=None):
+    """Resolve a bare name to a code only from the user's own holding map."""
+    if not name_codes:
+        return None
+    name = re.sub(r'[*\s]', '', name)
+    if not re.search(r'[\u4e00-\u9fffA-Za-z]', name):
+        return None
+    if name in name_codes:
+        return name_codes[name]
+    short = GENERIC_NAME.sub('', name)
+    if len(short) < 2:
+        return None
+    for key, code in name_codes.items():
+        if len(GENERIC_NAME.sub('', key)) >= 2 and short == GENERIC_NAME.sub('', key):
+            return code
+    for key, code in name_codes.items():
+        key_short = GENERIC_NAME.sub('', key)
+        if len(key_short) >= 2 and (short in key or key_short in name):
+            return code
+    return None
+
+
+def extract_model_stocks(text, name_codes=None):
     """Copy explicit names, decisions and plan strings; never fill from a scanner."""
     stocks, context, context_quote, active, table_headers = [], '', '', None, None
     name_code = re.compile(r'([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z·*\-]{1,17})\s*[（(]?((?:sh|sz|hk)?\d{5,6})(?!\d)[）)]?')
@@ -108,8 +138,9 @@ def extract_model_stocks(text):
                 code = next((values[key] for key in ('代码', '股票代码') if key in values), '')
                 decision = next((values[key] for key in ('结论', '操作', '建议', '最终结论', '模型结论', '判断') if key in values), '')
                 match = name_code.search(name + ' ' + code)
-                if match and decision:
-                    entry = {'name': match[1], 'code': match[2], 'decision': decision, 'decision_evidence': raw, 'source_line': line}
+                resolved = match[2] if match else (None if decision in (':--', '—', '-', '') else resolve_code(name, name_codes))
+                if resolved and decision:
+                    entry = {'name': clean_line(name) if not match else match[1], 'code': resolved, 'decision': decision, 'decision_evidence': raw, 'source_line': line}
                     for field, labels in {'entry': ('买入', '买点', '买入区间', '买入价', '入场价'), 'stop': ('止损', '止损价'), 'target': ('目标', '目标价'), 'position': ('仓位',), 'shares': ('股数',), 'reason': ('理由', '原因', '推荐理由')}.items():
                         value = next((values[label] for label in labels if label in values), '')
                         if value:
@@ -282,7 +313,7 @@ def structured_stock(stock, lines, stock_headings):
     return result
 
 
-def structure_model_result(text, prompt=''):
+def structure_model_result(text, prompt='', name_codes=None):
     lines = text.splitlines()
     cleaned = [clean_line(line) for line in lines if line.strip()]
     headline = cleaned[0] if cleaned else None
@@ -298,7 +329,7 @@ def structure_model_result(text, prompt=''):
         summary['participation'], evidence['participation'] = headline, evidence['conclusion']
     markets = [market for market in ('A股', '港股') if market in (prompt + '\n' + (headline or ''))]
     summary['markets'], summary['evidence'] = markets, evidence
-    raw_stocks = extract_model_stocks(text)
+    raw_stocks = extract_model_stocks(text, name_codes)
     headings = {stock['source_line'] for stock in raw_stocks}
     stocks = [structured_stock(stock, lines, headings) for stock in raw_stocks]
     return {'schema_version': STRUCTURE_VERSION, 'extraction': 'source_text', 'summary': summary, 'stocks': stocks}
